@@ -1,4 +1,5 @@
-{% include "header.html" %}
+{% from "bootstrap5/form.html" import render_form %} {% block content %} {%
+include "header.html" %}
 
 <!-- Page Header-->
 <header class="masthead" style="background-image: url('{{post.img_url}}')">
@@ -10,7 +11,7 @@
           <h2 class="subheading">{{ post.subtitle }}</h2>
           <span class="meta"
             >Posted by
-            <a href="#">{{ post.author }}</a>
+            <a href="#">{{ post.author.name }}</a>
             on {{ post.date }}
           </span>
         </div>
@@ -25,7 +26,7 @@
     <div class="row gx-4 gx-lg-5 justify-content-center">
       <div class="col-md-10 col-lg-8 col-xl-7">
         {{ post.body|safe }}
-
+         {% if current_user.id == 1 %}
         <div class="d-flex justify-content-end mb-4">
           <a
             class="btn btn-primary float-right"
@@ -33,9 +34,31 @@
             >Edit Post</a
           >
         </div>
+        {% endif %}
+            {{ ckeditor.load() }}
+            {{ ckeditor.config(name='comment') }}
+            {{ render_form(form, novalidate=True, button_map={"submit": "primary"}) }}
+              <div class="col-lg-8 col-md-10 mx-auto comment">
+          <ul class="commentList">
+            {% for comment in post.comments: %}
+                  <li>
+              <div class="commenterImage">
+                <img
+                 src="{{ comment.comment_author.email | gravatar }}"
+                />
+              </div>
+              <div class="commentText">
+                {{comment.comment|safe}}
+                <span class="date sub-text">{{comment.comment_author.name}}</span>
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+
       </div>
     </div>
   </div>
 </article>
 
-{% include "footer.html" %}
+{% include "footer.html" %}{% endblock %}

@@ -1,18 +1,32 @@
-from flask import Flask, render_template, redirect, url_for
+from functools import wraps
+from flask import Flask, render_template, redirect, url_for, request, flash, abort
 from flask_bootstrap import Bootstrap5
+from flask_gravatar import Gravatar
+from flask_login import UserMixin, login_user, current_user, LoginManager, logout_user
 from flask_sqlalchemy import SQLAlchemy
 from numpy.core.defchararray import title
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import Integer, String, Text
 from flask_wtf import FlaskForm
-from wtforms import StringField, SubmitField
-from wtforms.validators import DataRequired, URL
+from werkzeug.security import generate_password_hash, check_password_hash
 from flask_ckeditor import CKEditor, CKEditorField
 from datetime import date
+
+from forms import CreatePostForm, CreateRegisterForm, CreateLoginForm, CreateCommentForm
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = '8BYkEfBA6O6donzWlSihBXox7C0sKR6b'
 ckeditor = CKEditor(app)
 Bootstrap5(app)
+
+gravatar = Gravatar(app,
+                    size=50,
+                    rating='g',
+                    default='retro',
+                    force_default=False,
+                    force_lower=False,
+                    use_ssl=False,
+                    base_url=None)
 
 # CREATE DATABASE
 class Base(DeclarativeBase):
@@ -21,42 +35,146 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///posts.db'
 db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
+login_manager = LoginManager()
+login_manager.init_app(app)
+
+# Create a user_loader callback
+@login_manager.user_loader
+def load_user(user_id):
+    return db.get_or_404(User, user_id)
+
+
+#Create admin-only decorator
+def admin_only(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        #If id is not 1 then return abort with 403 error (user is not admin)
+        if current_user.id != 1:
+            return abort(403)
+        #Otherwise continue with the route function
+        return f(*args, **kwargs)
+    return decorated_function
+
 
 # CONFIGURE TABLE
 class BlogPost(db.Model):
+    __tablename__ = "blog_posts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(250), unique=True, nullable=False)
     subtitle: Mapped[str] = mapped_column(String(250), nullable=False)
     date: Mapped[str] = mapped_column(String(250), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    author: Mapped[str] = mapped_column(String(250), nullable=False)
+    author_id: Mapped[int] = mapped_column(Integer, db.ForeignKey("users.id"))
+    author = relationship("User", back_populates="posts")
     img_url: Mapped[str] = mapped_column(String(250), nullable=False)
+    comments=relationship("Comment",back_populates="post")
+
+class User(UserMixin,db.Model):
+    __tablename__="users"
+    id:Mapped[int]=mapped_column(Integer,primary_key=True)
+    email:Mapped[str] =mapped_column(String(100),unique=True,nullable=False)
+    name:Mapped[str] =mapped_column(String(100),nullable=False)
+    password: Mapped[str] = mapped_column(String(100), nullable=False)
+    posts = relationship("BlogPost", back_populates="author")
+    comments=relationship("Comment",back_populates="comment_author")
+
+class Comment(db.Model):
+    __tablename__="comments"
+    id:Mapped[int]=mapped_column(Integer,primary_key=True)
+    comment:Mapped[str]=mapped_column(Text,nullable=False)
+    author_id: Mapped[int] = mapped_column(Integer, db.ForeignKey("users.id"))
+    comment_author = relationship("User", back_populates="comments")
+    post_id:Mapped[int] = mapped_column(Integer,db.ForeignKey("blog_posts.id"))
+    post=relationship("BlogPost",back_populates="comments")
 
 
 with app.app_context():
     db.create_all()
 
-class CreatePostForm(FlaskForm):
-    title = StringField("Blog Post Title", validators=[DataRequired()])
-    subtitle = StringField("Subtitle", validators=[DataRequired()])
-    author = StringField("Your Name", validators=[DataRequired()])
-    img_url = StringField("Blog Image URL", validators=[DataRequired(), URL()])
-    body = CKEditorField("Blog Content", validators=[DataRequired()])
-    submit = SubmitField("Submit Post")
+# class CreatePostForm(FlaskForm):
+#     title = StringField("Blog Post Title", validators=[DataRequired()])
+#     subtitle = StringField("Subtitle", validators=[DataRequired()])
+#     author = StringField("Your Name", validators=[DataRequired()])
+#     img_url = StringField("Blog Image URL", validators=[DataRequired(), URL()])
+#     body = CKEditorField("Blog Content", validators=[DataRequired()])
+#     submit = SubmitField("Submit Post")
+
+@app.route('/register',methods=["GET","POST"])
+def register():
+    form = CreateRegisterForm()
+    if form.validate_on_submit():
+        if request.method == "POST":
+            email=request.form.get("email")
+            result=db.session.execute(db.select(User).where(User.email==email))
+            user=result.scalar()
+            if user:
+                flash("You have already signed up with this email. Login instead")
+                return redirect(url_for('login'))
+            new_user=User(
+                email=request.form.get('email'),
+                name=request.form.get('name'),
+                password=generate_password_hash(request.form.get('password'),'pbkdf2:sha256',6)
+
+            )
+            db.session.add(new_user)
+            db.session.commit()
+            login_user(new_user)
+            return redirect(url_for('get_all_posts'))
+    return render_template("register.html",form=form,current_user=current_user)
+
+@app.route('/login',methods=["GET","POST"])
+def login():
+    form=CreateLoginForm()
+    if form.validate_on_submit():
+        if request.method == "POST":
+            email=request.form.get('email')
+            password=request.form.get('password')
+            result=db.session.execute(db.select(User).where(User.email == email))
+            user=result.scalar()
+            if not user:
+                flash('That email does not exist try again.')
+                return redirect(url_for('login'))
+            elif not check_password_hash(user.password,password):
+                flash('Password Incorrect. Please try again')
+                return redirect(url_for('login'))
+            else:
+                login_user(user)
+                return redirect(url_for('get_all_posts'))
+    return render_template("login.html",form=form,current_user=current_user)
+
+
+@app.route('/logout')
+def logout():
+    logout_user()
+    return redirect(url_for('get_all_posts'))
 
 @app.route('/')
 def get_all_posts():
     result=db.session.execute(db.select(BlogPost))
     posts=result.scalars().all()
-    return render_template("index.html", all_posts=posts)
+    return render_template("index.html", all_posts=posts,current_user=current_user)
 
-@app.route('/<int:post_id>')
+@app.route('/<int:post_id>',methods=["GET","POST"])
 def show_post(post_id):
+    comment_form=CreateCommentForm()
     requested_post = db.get_or_404(BlogPost,post_id)
-    return render_template("post.html", post=requested_post)
+    if comment_form.validate_on_submit():
+        if not current_user.is_authenticated:
+            flash("You need to login to comment")
+            return redirect(url_for('login'))
+
+        new_comment=Comment(
+            comment=comment_form.comment.data,
+            comment_author=current_user,
+            post=requested_post
+        )
+        db.session.add(new_comment)
+        db.session.commit()
+    return render_template("post.html",form=comment_form, post=requested_post,current_user=current_user)
 
 
 @app.route('/new_post',methods=["GET","POST"])
+@admin_only
 def new_post():
     form=CreatePostForm()
     if form.validate_on_submit():
@@ -65,15 +183,17 @@ def new_post():
             subtitle=form.subtitle.data,
             body=form.body.data,
             img_url=form.img_url.data,
-            author=form.author.data,
+            author_id=current_user.id,
+            author=current_user,
             date=date.today().strftime("%B %d, %Y")
         )
         db.session.add(new_post)
         db.session.commit()
         return redirect(url_for('get_all_posts'))
-    return render_template("make-post.html",form=form)
+    return render_template("make-post.html",form=form,current_user=current_user)
 
 @app.route("/edit-post/<int:post_id>",methods=["GET","POST"])
+@admin_only
 def edit_post(post_id):
     post=db.get_or_404(BlogPost,post_id)
     edit_form=CreatePostForm(
@@ -91,9 +211,10 @@ def edit_post(post_id):
         post.body = edit_form.body.data
         db.session.commit()
         return redirect(url_for("show_post", post_id=post.id))
-    return render_template("make-post.html",form=edit_form,is_edit=True)
+    return render_template("make-post.html",form=edit_form,is_edit=True,current_user=current_user)
 
 @app.route("/delete_post/<int:post_id>")
+@admin_only
 def delete_post(post_id):
     post=db.get_or_404(BlogPost,post_id)
     db.session.delete(post)
@@ -102,12 +223,12 @@ def delete_post(post_id):
 
 @app.route("/about")
 def about():
-    return render_template("about.html")
+    return render_template("about.html",current_user=current_user)
 
 
 @app.route("/contact")
 def contact():
-    return render_template("contact.html")
+    return render_template("contact.html",current_user=current_user)
 
 
 if __name__ == "__main__":
